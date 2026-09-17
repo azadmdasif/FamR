@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // User profiles (Child or Parent)
+    match /users/{userId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Child Link Requests (Parent invites Child, Child accepts/declines)
+    match /linkRequests/{requestId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Family / Shared Household Group
+    match /families/{familyId} {
+      allow read, write: if isAuthenticated();
+
+      match /timeBlocks/{blockId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /tasks/{taskId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /daySessions/{sessionId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /blockSessions/{sessionId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /readingLogs/{logId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /speechLogs/{logId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /notifications/{notifId} {
+        allow read, write: if isAuthenticated();
+      }
+      match /stats/{statId} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+  }
+}

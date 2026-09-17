@@ -1,0 +1,10 @@
+{
+  "name": "Family Routine & Growth Planner",
+  "description": "A calm, structured family routine, task planner, and habit companion connecting parents and children with linked accounts, shared time blocks, speech practice, focus timers, and reading logs.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
