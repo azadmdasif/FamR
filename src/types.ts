@@ -125,6 +125,8 @@ export interface BlockSession {
   endedAt?: string; // "HH:MM"
   endedAtTimestamp?: string; // ISO
   status: 'not_started' | 'in_progress' | 'completed';
+  isStarted?: boolean;
+  isEnded?: boolean;
 }
 
 export interface ClassFeedbackComment {
@@ -137,10 +139,11 @@ export interface ClassFeedbackComment {
   time: string; // HH:MM
   timestamp: string; // ISO timestamp
   authorRole: 'teacher' | 'student' | 'parent';
+  role?: 'teacher' | 'student' | 'parent';
   authorName: string;
   topicsCovered: string; // a: topics covered
   homeworkGiven: string; // b: homework given
-  previousHomeworkFinished: 'yes' | 'no' | 'partial' | 'n/a'; // c: previous homework finished or not
+  previousHomeworkFinished: 'yes' | 'no' | 'partial' | 'in_progress' | 'n/a'; // c: previous homework finished or not
   optionalComments?: string; // d: optional comments
 }
 

@@ -10,6 +10,10 @@ import {
   Sparkles,
   ArrowRight,
   AlertCircle,
+  AlertTriangle,
+  Key,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -38,6 +42,8 @@ export const LoginScreen: React.FC = () => {
     signInWithEmail,
     signUpWithEmail,
     signInWithGoogle,
+    signInWithDemo,
+    isFirebaseConfigured,
   } = useApp();
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
@@ -47,6 +53,10 @@ export const LoginScreen: React.FC = () => {
   const [selectedRole, setSelectedRole] = useState<UserRole>('parent');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // Manual key input for quick testing if deployment lacks env var
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [manualApiKey, setManualApiKey] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,20 +113,36 @@ export const LoginScreen: React.FC = () => {
     setError(null);
     setLoading(true);
     try {
-      const demoEmail = targetRole === 'child' ? 'child@family.app' : 'parent@family.app';
-      const demoPassword = 'Password123!';
-      const demoName = targetRole === 'child' ? 'Child' : 'Parent';
+      if (!isFirebaseConfigured) {
+        await signInWithDemo(targetRole);
+      } else {
+        const demoEmail = targetRole === 'child' ? 'child@family.app' : 'parent@family.app';
+        const demoPassword = 'Password123!';
+        const demoName = targetRole === 'child' ? 'Child' : 'Parent';
 
-      try {
-        await signInWithEmail(demoEmail, demoPassword);
-      } catch {
-        await signUpWithEmail(demoEmail, demoPassword, demoName, targetRole, 'family-routine-home');
+        try {
+          await signInWithEmail(demoEmail, demoPassword);
+        } catch {
+          await signUpWithEmail(demoEmail, demoPassword, demoName, targetRole, 'family-routine-home');
+        }
       }
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Demo sign-in failed.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSaveManualApiKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    const key = manualApiKey.trim();
+    if (!key) return;
+    try {
+      localStorage.setItem('custom_firebase_api_key', key);
+      window.location.reload();
+    } catch (err) {
+      console.error('Could not save API key:', err);
     }
   };
 
@@ -137,6 +163,82 @@ export const LoginScreen: React.FC = () => {
             Please sign in to access your daily schedule, tasks, and routines.
           </p>
         </div>
+
+        {/* Offline / Demo Notice if Firebase API key is not present */}
+        {!isFirebaseConfigured && (
+          <div className="w-full bg-amber-50/90 border border-amber-200/80 rounded-2xl p-4 mb-4 text-left shadow-2xs">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div className="flex-1 text-xs text-amber-900 leading-relaxed">
+                <p className="font-semibold text-amber-950">Firebase API Key Missing on Vercel</p>
+                <p className="text-[11px] text-amber-800/90 mt-1">
+                  The app is currently running in <strong>Demo / Offline Mode</strong>. You can test all views instantly below.
+                </p>
+
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('parent')}
+                    className="py-1.5 px-3 bg-amber-700 hover:bg-amber-800 text-white font-medium rounded-xl text-xs transition-colors shadow-2xs"
+                  >
+                    Open Demo Parent View
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('child')}
+                    className="py-1.5 px-3 bg-white border border-amber-300 text-amber-900 hover:bg-amber-100 font-medium rounded-xl text-xs transition-colors"
+                  >
+                    Open Demo Child View
+                  </button>
+                </div>
+
+                <div className="mt-3 pt-2.5 border-t border-amber-200/60">
+                  <button
+                    type="button"
+                    onClick={() => setShowKeyInput((v) => !v)}
+                    className="flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-950 font-medium"
+                  >
+                    <Key className="w-3 h-3 text-amber-600" />
+                    <span>How to enable cloud sync or enter API key</span>
+                    {showKeyInput ? (
+                      <ChevronUp className="w-3 h-3 ml-0.5" />
+                    ) : (
+                      <ChevronDown className="w-3 h-3 ml-0.5" />
+                    )}
+                  </button>
+
+                  {showKeyInput && (
+                    <div className="mt-2 pt-2 text-[11px] text-amber-900 flex flex-col gap-2">
+                      <p className="text-amber-800">
+                        1. In Vercel: <strong>Settings</strong> &rarr; <strong>Environment Variables</strong>
+                        <br />
+                        2. Key: <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">VITE_FIREBASE_API_KEY</code>
+                        <br />
+                        3. Click <strong>Deployments</strong> &rarr; <strong>Redeploy</strong>
+                      </p>
+
+                      <form onSubmit={handleSaveManualApiKey} className="flex gap-1.5 mt-1">
+                        <input
+                          type="text"
+                          placeholder="Or paste API key here..."
+                          value={manualApiKey}
+                          onChange={(e) => setManualApiKey(e.target.value)}
+                          className="flex-1 px-2.5 py-1 text-[11px] rounded-lg border border-amber-300 bg-white text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
+                        />
+                        <button
+                          type="submit"
+                          className="px-2.5 py-1 bg-amber-800 text-white rounded-lg text-[11px] font-medium hover:bg-amber-900"
+                        >
+                          Connect
+                        </button>
+                      </form>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Minimalist Card */}
         <div className="w-full bg-white rounded-3xl p-6 shadow-xs border border-[#e2ece0] flex flex-col gap-4">
@@ -228,7 +330,7 @@ export const LoginScreen: React.FC = () => {
                 <input
                   type="email"
                   required
-                  placeholder="name@example.com"
+                  placeholder="parent@family.app"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-200 bg-[#fbfdfb] text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-emerald-800 focus:border-emerald-800 transition-all"
@@ -247,7 +349,6 @@ export const LoginScreen: React.FC = () => {
                   type="password"
                   required
                   placeholder="••••••••"
-                  minLength={6}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-xl border border-stone-200 bg-[#fbfdfb] text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-emerald-800 focus:border-emerald-800 transition-all"
@@ -255,28 +356,32 @@ export const LoginScreen: React.FC = () => {
               </div>
             </div>
 
-            {/* Error Message */}
             {error && (
-              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-start gap-1.5">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                <span>{error}</span>
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-start gap-2 mt-1">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="leading-snug">{error}</span>
               </div>
             )}
 
             {/* Submit Button */}
             <button
               type="submit"
-              id="login-submit-btn"
               disabled={loading}
-              className="w-full mt-1 py-2.5 px-4 bg-emerald-900 hover:bg-emerald-800 text-white font-semibold text-xs sm:text-sm rounded-2xl flex items-center justify-center gap-1.5 transition-all shadow-xs active:scale-[0.99] disabled:opacity-50"
+              className="w-full mt-1 py-2.5 px-4 bg-emerald-900 hover:bg-emerald-800 text-white text-xs sm:text-sm font-semibold rounded-2xl flex items-center justify-center gap-2 transition-all shadow-xs active:scale-[0.99] disabled:opacity-50"
             >
-              <span>{loading ? 'Please wait...' : mode === 'signin' ? 'Sign In' : 'Create Account'}</span>
-              {!loading && <ArrowRight className="w-3.5 h-3.5" />}
+              {loading ? (
+                <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+              ) : (
+                <>
+                  <span>{mode === 'signin' ? 'Sign In' : 'Create Account'}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
 
-          {/* Mode Switcher */}
-          <div className="pt-2 border-t border-stone-100 text-center">
+          {/* Toggle Mode */}
+          <div className="text-center pt-2 border-t border-stone-100">
             {mode === 'signin' ? (
               <p className="text-xs text-stone-500">
                 Don't have an account?{' '}

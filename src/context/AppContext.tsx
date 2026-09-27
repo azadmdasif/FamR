@@ -26,7 +26,7 @@ import {
   setDoc,
   where,
 } from 'firebase/firestore';
-import { auth, db } from '../lib/firebase';
+import { auth, db, isFirebaseConfigured } from '../lib/firebase';
 import {
   INITIAL_DAY_SESSIONS,
   INITIAL_FOCUS_SESSIONS,
@@ -85,6 +85,7 @@ interface AppContextType {
   currentUser: FirebaseUser | null;
   userProfile: UserProfile | null;
   authLoading: boolean;
+  isFirebaseConfigured: boolean;
   signInWithEmail: (email: string, pass: string) => Promise<void>;
   signUpWithEmail: (
     email: string,
@@ -97,6 +98,7 @@ interface AppContextType {
     roleChoice?: UserRole,
     familyIdChoice?: string
   ) => Promise<{ isNewUser: boolean; role: UserRole }>;
+  signInWithDemo: (role: UserRole) => Promise<void>;
   updateUserProfile: (updates: Partial<UserProfile>) => Promise<void>;
   signOutUser: () => Promise<void>;
   isAuthModalOpen: boolean;
@@ -421,54 +423,105 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const canSetRoutines = role === 'parent';
   const canAssignTasks = role === 'parent';
 
+  // Demo Sign In method for offline testing or when Firebase is not configured
+  const signInWithDemo = async (roleChoice: UserRole) => {
+    const isParent = roleChoice === 'parent';
+    const demoUser = {
+      uid: isParent ? 'demo-parent-uid' : 'demo-child-uid',
+      email: isParent ? 'parent@family.app' : 'child@family.app',
+      displayName: isParent ? 'Demo Parent' : 'Demo Child',
+    } as unknown as FirebaseUser;
+
+    const demoProfile: UserProfile = {
+      uid: demoUser.uid,
+      email: demoUser.email || '',
+      displayName: demoUser.displayName || (isParent ? 'Parent' : 'Child'),
+      role: roleChoice,
+      familyId: activeFamilyId || DEFAULT_FAMILY_ID,
+      linkedChildren: isParent ? [{ id: 'child-1', name: 'Zahid' }] : [],
+      linkedParents: !isParent ? [{ id: 'parent-1', name: 'Parent Guardian' }] : [],
+      createdAt: new Date().toISOString(),
+    };
+
+    setCurrentUser(demoUser);
+    setUserProfile(demoProfile);
+    setRoleState(roleChoice);
+    localStorage.setItem(STORAGE_KEYS.ROLE, roleChoice);
+    try {
+      localStorage.setItem(
+        'family_routine_demo_user',
+        JSON.stringify({ user: demoUser, profile: demoProfile })
+      );
+    } catch {}
+  };
+
   // Firebase Auth state listener
   useEffect(() => {
+    if (!auth || !isFirebaseConfigured) {
+      // Check if there was a saved demo user session
+      const savedDemo = localStorage.getItem('family_routine_demo_user');
+      if (savedDemo) {
+        try {
+          const parsed = JSON.parse(savedDemo);
+          if (parsed?.user && parsed?.profile) {
+            setCurrentUser(parsed.user);
+            setUserProfile(parsed.profile);
+            setRoleState(parsed.profile.role || 'child');
+          }
+        } catch {}
+      }
+      setAuthLoading(false);
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
         try {
-          const userDocRef = doc(db, 'users', user.uid);
-          const snap = await getDoc(userDocRef);
-          if (snap.exists()) {
-            const data = snap.data() as Record<string, any>;
-            const rawRole = data.role as string | undefined;
-            const mappedRole: UserRole =
-              rawRole === 'guardian'
-                ? 'parent'
-                : rawRole === 'zahid'
-                ? 'child'
-                : rawRole === 'parent'
-                ? 'parent'
-                : 'child';
-            setUserProfile({
-              ...data,
-              role: mappedRole,
-            } as UserProfile);
-            setRoleState(mappedRole);
-            localStorage.setItem(STORAGE_KEYS.ROLE, mappedRole);
-            if (data.familyId) {
-              setActiveFamilyId(data.familyId);
-              localStorage.setItem(STORAGE_KEYS.FAMILY_ID, data.familyId);
+          if (db) {
+            const userDocRef = doc(db, 'users', user.uid);
+            const snap = await getDoc(userDocRef);
+            if (snap.exists()) {
+              const data = snap.data() as Record<string, any>;
+              const rawRole = data.role as string | undefined;
+              const mappedRole: UserRole =
+                rawRole === 'guardian'
+                  ? 'parent'
+                  : rawRole === 'zahid'
+                  ? 'child'
+                  : rawRole === 'parent'
+                  ? 'parent'
+                  : 'child';
+              setUserProfile({
+                ...data,
+                role: mappedRole,
+              } as UserProfile);
+              setRoleState(mappedRole);
+              localStorage.setItem(STORAGE_KEYS.ROLE, mappedRole);
+              if (data.familyId) {
+                setActiveFamilyId(data.familyId);
+                localStorage.setItem(STORAGE_KEYS.FAMILY_ID, data.familyId);
+              }
+              if (data.linkedChildren && data.linkedChildren.length > 0) {
+                setLinkedChildren(data.linkedChildren);
+              }
+              if (data.linkedParents && data.linkedParents.length > 0) {
+                setLinkedParents(data.linkedParents);
+              }
+            } else {
+              const initialProfile: UserProfile = {
+                uid: user.uid,
+                email: user.email || '',
+                displayName: user.displayName || (role === 'parent' ? 'Parent' : 'Child'),
+                role: role,
+                familyId: activeFamilyId,
+                linkedChildren: role === 'parent' ? (linkedChildren || []) : [],
+                linkedParents: linkedParents || [],
+                createdAt: new Date().toISOString(),
+              };
+              await setDoc(userDocRef, sanitizeForFirestore(initialProfile));
+              setUserProfile(initialProfile);
             }
-            if (data.linkedChildren && data.linkedChildren.length > 0) {
-              setLinkedChildren(data.linkedChildren);
-            }
-            if (data.linkedParents && data.linkedParents.length > 0) {
-              setLinkedParents(data.linkedParents);
-            }
-          } else {
-            const initialProfile: UserProfile = {
-              uid: user.uid,
-              email: user.email || '',
-              displayName: user.displayName || (role === 'parent' ? 'Parent' : 'Child'),
-              role: role,
-              familyId: activeFamilyId,
-              linkedChildren: role === 'parent' ? (linkedChildren || []) : [],
-              linkedParents: linkedParents || [],
-              createdAt: new Date().toISOString(),
-            };
-            await setDoc(userDocRef, sanitizeForFirestore(initialProfile));
-            setUserProfile(initialProfile);
           }
         } catch (err) {
           console.error('Error fetching user profile:', err);
@@ -484,7 +537,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Auth helper methods
   const signInWithEmail = async (email: string, pass: string) => {
+    if (!auth || !isFirebaseConfigured) {
+      throw new Error(
+        'Firebase API Key is missing in Vercel environment variables. Please add VITE_FIREBASE_API_KEY in Vercel, or click Launch Demo Mode below.'
+      );
+    }
     const cred = await signInWithEmailAndPassword(auth, email, pass);
+    if (!db) return;
     const userDocRef = doc(db, 'users', cred.user.uid);
     const snap = await getDoc(userDocRef);
     if (snap.exists()) {
@@ -516,6 +575,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     roleChoice: UserRole,
     familyIdChoice = DEFAULT_FAMILY_ID
   ) => {
+    if (!auth || !isFirebaseConfigured) {
+      throw new Error(
+        'Firebase API Key is missing in Vercel environment variables. Please add VITE_FIREBASE_API_KEY in Vercel, or click Launch Demo Mode below.'
+      );
+    }
     const cred = await createUserWithEmailAndPassword(auth, email, pass);
     const newProfile: UserProfile = {
       uid: cred.user.uid,
@@ -527,7 +591,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       linkedParents: [],
       createdAt: new Date().toISOString(),
     };
-    await setDoc(doc(db, 'users', cred.user.uid), sanitizeForFirestore(newProfile));
+    if (db) {
+      await setDoc(doc(db, 'users', cred.user.uid), sanitizeForFirestore(newProfile));
+    }
     setUserProfile(newProfile);
     setRole(roleChoice);
     setActiveFamilyId(familyIdChoice);
@@ -538,10 +604,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     roleChoice?: UserRole,
     familyIdChoice = DEFAULT_FAMILY_ID
   ): Promise<{ isNewUser: boolean; role: UserRole }> => {
+    if (!auth || !isFirebaseConfigured) {
+      throw new Error(
+        'Firebase API Key is missing in Vercel environment variables. Please add VITE_FIREBASE_API_KEY in Vercel, or click Launch Demo Mode below.'
+      );
+    }
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
     const cred = await signInWithPopup(auth, provider);
     const user = cred.user;
+
+    if (!db) {
+      return { isNewUser: false, role: roleChoice || 'child' };
+    }
 
     const userDocRef = doc(db, 'users', user.uid);
     const snap = await getDoc(userDocRef);
@@ -595,9 +670,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateUserProfile = async (updates: Partial<UserProfile>) => {
     if (!currentUser) return;
-    const userDocRef = doc(db, 'users', currentUser.uid);
-    await setDoc(userDocRef, sanitizeForFirestore(updates), { merge: true });
-    setUserProfile((prev) => (prev ? { ...prev, ...updates } : null));
+    if (db && isFirebaseConfigured) {
+      const userDocRef = doc(db, 'users', currentUser.uid);
+      await setDoc(userDocRef, sanitizeForFirestore(updates), { merge: true });
+    }
+    setUserProfile((prev) => {
+      const updated = prev ? { ...prev, ...updates } : null;
+      if (updated && !isFirebaseConfigured) {
+        try {
+          localStorage.setItem(
+            'family_routine_demo_user',
+            JSON.stringify({ user: currentUser, profile: updated })
+          );
+        } catch {}
+      }
+      return updated;
+    });
     if (updates.role) {
       setRole(updates.role);
     }
@@ -615,7 +703,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const signOutUser = async () => {
-    await signOut(auth);
+    try {
+      if (auth && isFirebaseConfigured) {
+        await signOut(auth);
+      }
+    } catch (e) {
+      console.warn('Sign out:', e);
+    }
+    localStorage.removeItem('family_routine_demo_user');
     setUserProfile(null);
     setCurrentUser(null);
   };
@@ -626,7 +721,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Real-time listener for link requests
   useEffect(() => {
-    if (!currentUser) {
+    if (!currentUser || !db || !isFirebaseConfigured) {
       setPendingLinkRequests([]);
       setSentLinkRequests([]);
       return;
@@ -747,7 +842,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // When a sent request is accepted by recipient, automatically update state & Firestore
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !db || !isFirebaseConfigured) return;
     const acceptedRequests = sentLinkRequests.filter((r) => r.status === 'accepted');
     if (acceptedRequests.length === 0) return;
 
@@ -800,19 +895,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
       setLinkedChildren(cleanedList);
       localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(cleanedList));
-      const userRef = doc(db, 'users', currentUser.uid);
-      setDoc(userRef, sanitizeForFirestore({ linkedChildren: cleanedList }), { merge: true }).catch(
-        console.error
-      );
+      if (db && isFirebaseConfigured) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        setDoc(userRef, sanitizeForFirestore({ linkedChildren: cleanedList }), { merge: true }).catch(
+          console.error
+        );
+      }
     }
 
     if (parentsModified) {
       setLinkedParents(currentParents);
       localStorage.setItem(STORAGE_KEYS.LINKED_PARENTS, JSON.stringify(currentParents));
-      const userRef = doc(db, 'users', currentUser.uid);
-      setDoc(userRef, sanitizeForFirestore({ linkedParents: currentParents }), { merge: true }).catch(
-        console.error
-      );
+      if (db && isFirebaseConfigured) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        setDoc(userRef, sanitizeForFirestore({ linkedParents: currentParents }), { merge: true }).catch(
+          console.error
+        );
+      }
     }
   }, [sentLinkRequests, currentUser, linkedChildren, linkedParents]);
 
@@ -823,6 +922,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): Promise<{ success: boolean; message: string }> => {
     if (!currentUser) {
       return { success: false, message: 'You must be signed in to send link requests.' };
+    }
+    if (!db || !isFirebaseConfigured) {
+      return {
+        success: false,
+        message: 'Live linking requires a configured Firebase API Key. Please add VITE_FIREBASE_API_KEY in Vercel to sync across devices.',
+      };
     }
     const cleanEmail = childEmail.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
@@ -886,6 +991,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!currentUser) {
       return { success: false, message: 'You must be signed in to send link requests.' };
     }
+    if (!db || !isFirebaseConfigured) {
+      return {
+        success: false,
+        message: 'Live linking requires a configured Firebase API Key. Please add VITE_FIREBASE_API_KEY in Vercel to sync across devices.',
+      };
+    }
     const cleanEmail = parentEmail.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       return { success: false, message: 'Please enter a valid parent email address.' };
@@ -943,7 +1054,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Respond to incoming link request (Can be child accepting parent invite OR parent accepting child request)
   const respondToLinkRequest = async (requestId: string, accept: boolean) => {
-    if (!currentUser) return;
+    if (!currentUser || !db || !isFirebaseConfigured) return;
     try {
       const reqRef = doc(db, 'linkRequests', requestId);
       const snap = await getDoc(reqRef);
@@ -1111,6 +1222,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const cancelLinkRequest = async (requestId: string) => {
+    if (!currentUser || !db || !isFirebaseConfigured) return;
     try {
       await deleteDoc(doc(db, 'linkRequests', requestId));
     } catch (err) {
@@ -1302,7 +1414,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Real-time Firestore synchronization for Family Group
   useEffect(() => {
-    if (!currentUser) return;
+    if (!currentUser || !db || !isFirebaseConfigured) return;
 
     const familyRef = doc(db, 'families', activeFamilyId);
 
@@ -1362,7 +1474,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Firestore sync helper
   const syncToFirestore = useCallback(
     (field: string, payload: any) => {
-      if (currentUser) {
+      if (currentUser && db && isFirebaseConfigured) {
         const familyRef = doc(db, 'families', activeFamilyId);
         setDoc(familyRef, sanitizeForFirestore({ [field]: payload }), { merge: true }).catch(console.error);
       }
@@ -2051,9 +2163,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentUser,
         userProfile,
         authLoading,
+        isFirebaseConfigured,
         signInWithEmail,
         signUpWithEmail,
         signInWithGoogle,
+        signInWithDemo,
         updateUserProfile,
         signOutUser,
         isAuthModalOpen,

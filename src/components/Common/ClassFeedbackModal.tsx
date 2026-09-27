@@ -166,13 +166,19 @@ export const ClassFeedbackModal: React.FC<ClassFeedbackModalProps> = ({
     }
   };
 
-  const getHwStatusBadge = (status: 'yes' | 'no' | 'partial' | 'n/a') => {
+  const getHwStatusBadge = (status: 'yes' | 'no' | 'partial' | 'in_progress' | 'n/a') => {
     switch (status) {
       case 'yes':
         return {
           bg: 'bg-emerald-100 text-emerald-800 border-emerald-200',
           label: 'Finished Previous Homework',
           icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />,
+        };
+      case 'in_progress':
+        return {
+          bg: 'bg-amber-100 text-amber-800 border-amber-200',
+          label: 'In Progress',
+          icon: <AlertCircle className="w-3.5 h-3.5 text-amber-600" />,
         };
       case 'partial':
         return {
@@ -187,6 +193,7 @@ export const ClassFeedbackModal: React.FC<ClassFeedbackModalProps> = ({
           icon: <X className="w-3.5 h-3.5 text-rose-600" />,
         };
       case 'n/a':
+      default:
         return {
           bg: 'bg-stone-100 text-stone-700 border-stone-200',
           label: 'N/A (No Previous HW)',
