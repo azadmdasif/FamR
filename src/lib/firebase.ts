@@ -9,14 +9,14 @@ const sanitizeEnv = (val?: string) => (val || '').trim().replace(/^["']|["']$/g,
 // Local storage manual override for testing
 const localOverride = typeof window !== 'undefined' ? (localStorage.getItem('custom_firebase_api_key') || '') : '';
 
-// Resolve API Key: Prefer the bundled project key or explicitly sanitized env key
+// Resolve API Key: Strictly prioritize environment variables (Vercel / .env) to keep secrets out of git
 const envApiKey = sanitizeEnv(import.meta.env.VITE_FIREBASE_API_KEY as string | undefined);
 const googleApiKey = sanitizeEnv(import.meta.env.VITE_GOOGLE_API_KEY as string | undefined);
 const jsonApiKey = sanitizeEnv(firebaseConfigJson.apiKey);
 const overrideApiKey = sanitizeEnv(localOverride);
 
-// Use the JSON project's matching key if present, otherwise fallback to env
-const resolvedApiKey = jsonApiKey || envApiKey || googleApiKey || overrideApiKey;
+// Environment variables take precedence, avoiding git exposure
+const resolvedApiKey = envApiKey || googleApiKey || overrideApiKey || jsonApiKey;
 
 export const isFirebaseConfigured = Boolean(resolvedApiKey && resolvedApiKey.length > 5);
 
