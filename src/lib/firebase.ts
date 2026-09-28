@@ -9,16 +9,23 @@ const sanitizeEnv = (val?: string) => (val || '').trim().replace(/^["']|["']$/g,
 // Local storage manual override for testing
 const localOverride = typeof window !== 'undefined' ? (localStorage.getItem('custom_firebase_api_key') || '') : '';
 
-// Resolve API Key: Strictly prioritize environment variables (Vercel / .env) to keep secrets out of git
+// Environment variables & local override
+const overrideApiKey = sanitizeEnv(localOverride);
 const envApiKey = sanitizeEnv(import.meta.env.VITE_FIREBASE_API_KEY as string | undefined);
 const googleApiKey = sanitizeEnv(import.meta.env.VITE_GOOGLE_API_KEY as string | undefined);
-const jsonApiKey = sanitizeEnv(firebaseConfigJson.apiKey);
-const overrideApiKey = sanitizeEnv(localOverride);
+const rawJsonApiKey = sanitizeEnv(firebaseConfigJson.apiKey);
+// Ignore old known revoked key if present
+const jsonApiKey = rawJsonApiKey === 'AIzaSyBfXhftITVMhfTvhauKIZd4WxbdZ0GlRBc' ? '' : rawJsonApiKey;
 
-// Environment variables take precedence, avoiding git exposure
-const resolvedApiKey = envApiKey || googleApiKey || overrideApiKey || jsonApiKey;
+// Local manual override in browser takes highest priority, followed by env vars
+const resolvedApiKey = overrideApiKey || envApiKey || googleApiKey || jsonApiKey;
 
 export const isFirebaseConfigured = Boolean(resolvedApiKey && resolvedApiKey.length > 5);
+
+// Expose masked key for debugging without leaking full secret
+export const activeApiKeyPreview = resolvedApiKey 
+  ? `${resolvedApiKey.slice(0, 8)}...${resolvedApiKey.slice(-4)}`
+  : 'None';
 
 const firebaseConfig = {
   apiKey: resolvedApiKey || 'AIzaSyPlaceholderForOfflineDemoMode00000',

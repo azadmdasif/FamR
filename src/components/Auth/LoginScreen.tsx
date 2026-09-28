@@ -10,10 +10,6 @@ import {
   Sparkles,
   ArrowRight,
   AlertCircle,
-  AlertTriangle,
-  Key,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 
 const GoogleIcon: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
@@ -43,7 +39,6 @@ export const LoginScreen: React.FC = () => {
     signUpWithEmail,
     signInWithGoogle,
     signInWithDemo,
-    isFirebaseConfigured,
   } = useApp();
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
@@ -54,10 +49,6 @@ export const LoginScreen: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Manual key input for quick testing if deployment lacks env var
-  const [showKeyInput, setShowKeyInput] = useState(false);
-  const [manualApiKey, setManualApiKey] = useState('');
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -65,7 +56,7 @@ export const LoginScreen: React.FC = () => {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // If using default demo placeholder credentials, log in immediately via Demo Mode
+    // If using test or placeholder credentials, log in immediately via Demo Mode
     if (cleanEmail === 'parent@family.app' || cleanEmail === 'demo@family.app' || cleanEmail === 'parent') {
       await handleQuickDemo('parent');
       return;
@@ -94,23 +85,21 @@ export const LoginScreen: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Authentication error:', err);
-      const msg = err.message || '';
-      if (err.code === 'auth/api-key-not-valid' || msg.includes('api-key-not-valid')) {
-        setError(
-          'API Key not valid: In your Firebase Console, make sure you clicked "Get started" under Authentication > Sign-in method (Email/Password). Or click "Enter Demo Mode" below to access the full app instantly.'
-        );
-      } else if (err.code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-        setError(
-          'Domain not authorized: Firebase blocks logins from unauthorized domains like Vercel. Add your Vercel URL to Authorized Domains in Firebase Console > Authentication > Settings, or click "Enter Demo Mode" below.'
-        );
-      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
+      const msg = (err?.message || '').toLowerCase();
+      const code = err?.code || '';
+
+      if (code === 'auth/api-key-not-valid' || msg.includes('api-key-not-valid') || code === 'auth/invalid-api-key') {
+        setError('Authentication service is temporarily unavailable. Please try again or continue in Demo Mode below.');
+      } else if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        setError('Sign-in from this domain is restricted. Please try again or continue in Demo Mode below.');
+      } else if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
         setError('Invalid email or password.');
-      } else if (err.code === 'auth/email-already-in-use') {
+      } else if (code === 'auth/email-already-in-use') {
         setError('This email is already in use. Please sign in instead.');
-      } else if (err.code === 'auth/weak-password') {
+      } else if (code === 'auth/weak-password') {
         setError('Password should be at least 6 characters.');
       } else {
-        setError(err.message || 'Authentication failed. Please try again.');
+        setError('Unable to sign in right now. Please try again or continue in Demo Mode.');
       }
     } finally {
       setLoading(false);
@@ -124,14 +113,7 @@ export const LoginScreen: React.FC = () => {
       await signInWithGoogle(selectedRole);
     } catch (err: any) {
       console.error('Google sign in error:', err);
-      if (err.code === 'auth/unauthorized-domain' || err.message?.includes('unauthorized-domain')) {
-        setError(
-          'Domain not authorized: Firebase blocks Google sign-in from this domain. ' +
-          'Click "Parent View" or "Child View" below to enter demo mode immediately.'
-        );
-      } else {
-        setError(err.message || 'Google sign-in was interrupted. Please try again.');
-      }
+      setError('Google sign-in was interrupted. Please try again or continue in Demo Mode below.');
     } finally {
       setLoading(false);
     }
@@ -143,22 +125,10 @@ export const LoginScreen: React.FC = () => {
     try {
       await signInWithDemo(targetRole);
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'Demo sign-in failed.');
+      console.error('Demo error:', err);
+      setError('Demo sign-in failed. Please try again.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleSaveManualApiKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    const key = manualApiKey.trim();
-    if (!key) return;
-    try {
-      localStorage.setItem('custom_firebase_api_key', key);
-      window.location.reload();
-    } catch (err) {
-      console.error('Could not save API key:', err);
     }
   };
 
@@ -179,82 +149,6 @@ export const LoginScreen: React.FC = () => {
             Please sign in to access your daily schedule, tasks, and routines.
           </p>
         </div>
-
-        {/* Offline / Demo Notice if Firebase API key is not present */}
-        {!isFirebaseConfigured && (
-          <div className="w-full bg-amber-50/90 border border-amber-200/80 rounded-2xl p-4 mb-4 text-left shadow-2xs">
-            <div className="flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-              <div className="flex-1 text-xs text-amber-900 leading-relaxed">
-                <p className="font-semibold text-amber-950">Firebase API Key Missing on Vercel</p>
-                <p className="text-[11px] text-amber-800/90 mt-1">
-                  The app is currently running in <strong>Demo / Offline Mode</strong>. You can test all views instantly below.
-                </p>
-
-                <div className="mt-2.5 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleQuickDemo('parent')}
-                    className="py-1.5 px-3 bg-amber-700 hover:bg-amber-800 text-white font-medium rounded-xl text-xs transition-colors shadow-2xs"
-                  >
-                    Open Demo Parent View
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickDemo('child')}
-                    className="py-1.5 px-3 bg-white border border-amber-300 text-amber-900 hover:bg-amber-100 font-medium rounded-xl text-xs transition-colors"
-                  >
-                    Open Demo Child View
-                  </button>
-                </div>
-
-                <div className="mt-3 pt-2.5 border-t border-amber-200/60">
-                  <button
-                    type="button"
-                    onClick={() => setShowKeyInput((v) => !v)}
-                    className="flex items-center gap-1 text-[11px] text-amber-800 hover:text-amber-950 font-medium"
-                  >
-                    <Key className="w-3 h-3 text-amber-600" />
-                    <span>How to enable cloud sync or enter API key</span>
-                    {showKeyInput ? (
-                      <ChevronUp className="w-3 h-3 ml-0.5" />
-                    ) : (
-                      <ChevronDown className="w-3 h-3 ml-0.5" />
-                    )}
-                  </button>
-
-                  {showKeyInput && (
-                    <div className="mt-2 pt-2 text-[11px] text-amber-900 flex flex-col gap-2">
-                      <p className="text-amber-800">
-                        1. In Vercel: <strong>Settings</strong> &rarr; <strong>Environment Variables</strong>
-                        <br />
-                        2. Key: <code className="bg-amber-100 px-1 py-0.5 rounded font-mono">VITE_FIREBASE_API_KEY</code>
-                        <br />
-                        3. Click <strong>Deployments</strong> &rarr; <strong>Redeploy</strong>
-                      </p>
-
-                      <form onSubmit={handleSaveManualApiKey} className="flex gap-1.5 mt-1">
-                        <input
-                          type="text"
-                          placeholder="Or paste API key here..."
-                          value={manualApiKey}
-                          onChange={(e) => setManualApiKey(e.target.value)}
-                          className="flex-1 px-2.5 py-1 text-[11px] rounded-lg border border-amber-300 bg-white text-stone-900 placeholder:text-stone-400 focus:outline-none focus:ring-1 focus:ring-amber-600 font-mono"
-                        />
-                        <button
-                          type="submit"
-                          className="px-2.5 py-1 bg-amber-800 text-white rounded-lg text-[11px] font-medium hover:bg-amber-900"
-                        >
-                          Connect
-                        </button>
-                      </form>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Minimalist Card */}
         <div className="w-full bg-white rounded-3xl p-6 shadow-xs border border-[#e2ece0] flex flex-col gap-4">
@@ -373,18 +267,18 @@ export const LoginScreen: React.FC = () => {
             </div>
 
             {error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex flex-col gap-2 mt-1">
-                <div className="flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs flex items-start gap-2.5 mt-1">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                <div className="flex-1 flex flex-col gap-1.5">
                   <span className="leading-snug">{error}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo(selectedRole)}
+                    className="self-start text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 underline mt-0.5"
+                  >
+                    Continue in Demo Mode &rarr;
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleQuickDemo('parent')}
-                  className="self-start text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 rounded-lg px-2.5 py-1 hover:bg-emerald-50 transition-colors shadow-2xs"
-                >
-                  Enter Parent Demo Mode Now &rarr;
-                </button>
               </div>
             )}
 
