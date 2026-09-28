@@ -63,6 +63,18 @@ export const LoginScreen: React.FC = () => {
     setError(null);
     setLoading(true);
 
+    const cleanEmail = email.trim().toLowerCase();
+
+    // If using default demo placeholder credentials, log in immediately via Demo Mode
+    if (cleanEmail === 'parent@family.app' || cleanEmail === 'demo@family.app' || cleanEmail === 'parent') {
+      await handleQuickDemo('parent');
+      return;
+    }
+    if (cleanEmail === 'child@family.app' || cleanEmail === 'child') {
+      await handleQuickDemo('child');
+      return;
+    }
+
     try {
       if (mode === 'signin') {
         await signInWithEmail(email.trim(), password);
@@ -82,10 +94,14 @@ export const LoginScreen: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Authentication error:', err);
-      if (err.code === 'auth/unauthorized-domain' || err.message?.includes('unauthorized-domain')) {
+      const msg = err.message || '';
+      if (err.code === 'auth/api-key-not-valid' || msg.includes('api-key-not-valid')) {
         setError(
-          'Domain not authorized: Firebase Auth blocks logins from unauthorized domains like Vercel. ' +
-          'Click "Parent View" or "Child View" below to test the app immediately in Demo Mode, or add your Vercel URL to Authorized Domains in your Firebase Console.'
+          'API Key not valid: In your Firebase Console, make sure you clicked "Get started" under Authentication > Sign-in method (Email/Password). Or click "Enter Demo Mode" below to access the full app instantly.'
+        );
+      } else if (err.code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        setError(
+          'Domain not authorized: Firebase blocks logins from unauthorized domains like Vercel. Add your Vercel URL to Authorized Domains in Firebase Console > Authentication > Settings, or click "Enter Demo Mode" below.'
         );
       } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
         setError('Invalid email or password.');
@@ -357,9 +373,18 @@ export const LoginScreen: React.FC = () => {
             </div>
 
             {error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-start gap-2 mt-1">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span className="leading-snug">{error}</span>
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex flex-col gap-2 mt-1">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-snug">{error}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleQuickDemo('parent')}
+                  className="self-start text-[11px] font-semibold text-emerald-800 bg-white border border-emerald-300 rounded-lg px-2.5 py-1 hover:bg-emerald-50 transition-colors shadow-2xs"
+                >
+                  Enter Parent Demo Mode Now &rarr;
+                </button>
               </div>
             )}
 
