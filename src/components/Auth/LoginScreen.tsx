@@ -82,7 +82,12 @@ export const LoginScreen: React.FC = () => {
       }
     } catch (err: any) {
       console.error('Authentication error:', err);
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
+      if (err.code === 'auth/unauthorized-domain' || err.message?.includes('unauthorized-domain')) {
+        setError(
+          'Domain not authorized: Firebase Auth blocks logins from unauthorized domains like Vercel. ' +
+          'Click "Parent View" or "Child View" below to test the app immediately in Demo Mode, or add your Vercel URL to Authorized Domains in your Firebase Console.'
+        );
+      } else if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
         setError('Invalid email or password.');
       } else if (err.code === 'auth/email-already-in-use') {
         setError('This email is already in use. Please sign in instead.');
@@ -103,7 +108,14 @@ export const LoginScreen: React.FC = () => {
       await signInWithGoogle(selectedRole);
     } catch (err: any) {
       console.error('Google sign in error:', err);
-      setError(err.message || 'Google sign-in was interrupted. Please try again.');
+      if (err.code === 'auth/unauthorized-domain' || err.message?.includes('unauthorized-domain')) {
+        setError(
+          'Domain not authorized: Firebase blocks Google sign-in from this domain. ' +
+          'Click "Parent View" or "Child View" below to enter demo mode immediately.'
+        );
+      } else {
+        setError(err.message || 'Google sign-in was interrupted. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -113,19 +125,7 @@ export const LoginScreen: React.FC = () => {
     setError(null);
     setLoading(true);
     try {
-      if (!isFirebaseConfigured) {
-        await signInWithDemo(targetRole);
-      } else {
-        const demoEmail = targetRole === 'child' ? 'child@family.app' : 'parent@family.app';
-        const demoPassword = 'Password123!';
-        const demoName = targetRole === 'child' ? 'Child' : 'Parent';
-
-        try {
-          await signInWithEmail(demoEmail, demoPassword);
-        } catch {
-          await signUpWithEmail(demoEmail, demoPassword, demoName, targetRole, 'family-routine-home');
-        }
-      }
+      await signInWithDemo(targetRole);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Demo sign-in failed.');

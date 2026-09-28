@@ -16,11 +16,11 @@ export const isFirebaseConfigured = Boolean(resolvedApiKey && resolvedApiKey.len
 
 const firebaseConfig = {
   apiKey: resolvedApiKey || 'AIzaSyPlaceholderForOfflineDemoMode00000',
-  authDomain: firebaseConfigJson.authDomain,
-  projectId: firebaseConfigJson.projectId,
-  storageBucket: firebaseConfigJson.storageBucket,
-  messagingSenderId: firebaseConfigJson.messagingSenderId,
-  appId: firebaseConfigJson.appId,
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string)?.trim() || firebaseConfigJson.authDomain,
+  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string)?.trim() || firebaseConfigJson.projectId,
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string)?.trim() || firebaseConfigJson.storageBucket,
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string)?.trim() || firebaseConfigJson.messagingSenderId,
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string)?.trim() || firebaseConfigJson.appId,
 };
 
 let app: FirebaseApp | null = null;
@@ -32,7 +32,10 @@ try {
   if (isFirebaseConfigured) {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     authInstance = getAuth(app);
-    dbInstance = getFirestore(app, firebaseConfigJson.firestoreDatabaseId || undefined);
+    const customDbId = (import.meta.env.VITE_FIREBASE_DATABASE_ID as string)?.trim() || (firebaseConfigJson as any).firestoreDatabaseId;
+    dbInstance = (customDbId && customDbId !== '(default)' && customDbId.trim().length > 0)
+      ? getFirestore(app, customDbId.trim())
+      : getFirestore(app);
   } else {
     // If no API key is configured, log an informative warning instead of throwing an uncaught module exception
     console.warn(
