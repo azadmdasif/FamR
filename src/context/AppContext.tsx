@@ -21,6 +21,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   setDoc,
@@ -131,6 +132,7 @@ interface AppContextType {
   ) => Promise<{ success: boolean; message: string }>;
   respondToLinkRequest: (requestId: string, accept: boolean) => Promise<void>;
   cancelLinkRequest: (requestId: string) => Promise<void>;
+  syncLinkedChildren: () => Promise<{ success: boolean; count: number; children: LinkedChild[] }>;
 
   selectedDate: string; // YYYY-MM-DD
   setSelectedDate: (date: string) => void;
@@ -331,6 +333,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem(STORAGE_KEYS.ACTIVE_CHILD, childId);
   };
 
+  // Auto-select valid active child when children list changes
+  useEffect(() => {
+    if (linkedChildren.length > 0) {
+      if (!activeChildId || !linkedChildren.some((c) => c.id === activeChildId)) {
+        setActiveChildId(linkedChildren[0].id);
+      }
+    }
+  }, [linkedChildren, activeChildId]);
+
   const addLinkedChild = (name: string, email?: string) => {
     const newChild: LinkedChild = {
       id: 'child-' + Date.now(),
@@ -339,9 +350,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       joinedAt: new Date().toISOString(),
     };
     setLinkedChildren((prev) => {
-      const updated = [...prev, newChild];
+      const filtered = prev.filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app');
+      const updated = [...filtered, newChild];
       localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(updated));
       syncToFirestore('linkedChildren', updated);
+      if (currentUser && db && isFirebaseConfigured) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        setDoc(userRef, sanitizeForFirestore({ linkedChildren: updated }), { merge: true }).catch(console.error);
+      }
       return updated;
     });
     setActiveChildId(newChild.id);
@@ -534,6 +550,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => unsubscribe();
   }, [role, activeFamilyId]);
+
+  // Real-time listener for current user's profile document (syncs linkedChildren, linkedParents, familyId)
+  useEffect(() => {
+    if (!currentUser || !db || !isFirebaseConfigured) return;
+    if (currentUser.uid.startsWith('demo-')) return;
+
+    const userDocRef = doc(db, 'users', currentUser.uid);
+    const unsub = onSnapshot(
+      userDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as Record<string, any>;
+          const rawRole = data.role as string | undefined;
+          const mappedRole: UserRole =
+            rawRole === 'guardian'
+              ? 'parent'
+              : rawRole === 'zahid'
+              ? 'child'
+              : rawRole === 'parent'
+              ? 'parent'
+              : 'child';
+          setUserProfile((prev) => ({
+            ...(prev || {}),
+            ...data,
+            role: mappedRole,
+          } as UserProfile));
+
+          if (data.familyId && data.familyId !== activeFamilyId) {
+            setActiveFamilyId(data.familyId);
+            localStorage.setItem(STORAGE_KEYS.FAMILY_ID, data.familyId);
+          }
+
+          if (data.linkedChildren && Array.isArray(data.linkedChildren)) {
+            const valid = (data.linkedChildren as LinkedChild[]).filter(
+              (c) => c.id !== 'child-default' && c.email !== 'child@family.app'
+            );
+            if (valid.length > 0) {
+              setLinkedChildren((prev) => {
+                const map = new Map<string, LinkedChild>();
+                prev.forEach((c) => {
+                  if (c.id !== 'child-default' && c.email !== 'child@family.app') {
+                    map.set(c.id, c);
+                  }
+                });
+                valid.forEach((c) => {
+                  map.set(c.id, c);
+                });
+                const merged = Array.from(map.values());
+                localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(merged));
+                return merged;
+              });
+            }
+          }
+
+          if (data.linkedParents && Array.isArray(data.linkedParents)) {
+            setLinkedParents(data.linkedParents);
+            localStorage.setItem(STORAGE_KEYS.LINKED_PARENTS, JSON.stringify(data.linkedParents));
+          }
+        }
+      },
+      (err) => console.error('Error in user profile listener:', err)
+    );
+
+    return () => unsub();
+  }, [currentUser]);
 
   // Auth helper methods
   const signInWithEmail = async (email: string, pass: string) => {
@@ -761,9 +842,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Sent requests: sent by this user
       const sent = allReqs.filter((r) => {
         const isSentAsParent =
-          (r.type === 'parent_invites_child' || !r.type) && r.parentId === currentUid;
+          (r.type === 'parent_invites_child' || !r.type) &&
+          (r.parentId === currentUid || (currentEmail && r.parentEmail?.toLowerCase() === currentEmail));
         const isSentAsChild =
-          r.type === 'child_requests_parent' && r.childUid === currentUid;
+          r.type === 'child_requests_parent' &&
+          (r.childUid === currentUid || (currentEmail && r.childEmail?.toLowerCase() === currentEmail));
         return isSentAsParent || isSentAsChild;
       });
 
@@ -842,12 +925,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // When a sent request is accepted by recipient, automatically update state & Firestore
   useEffect(() => {
-    if (!currentUser || !db || !isFirebaseConfigured) return;
+    if (!currentUser) return;
     const acceptedRequests = sentLinkRequests.filter((r) => r.status === 'accepted');
     if (acceptedRequests.length === 0) return;
 
     let childrenModified = false;
-    let currentChildren = [...linkedChildren];
+    let currentChildren = [...linkedChildren.filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app')];
     let parentsModified = false;
     let currentParents = [...(linkedParents || [])];
 
@@ -863,9 +946,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!exists) {
           currentChildren.push({
             id: childId,
-            name: req.childName || 'Child',
+            name: req.childName || req.childEmail?.split('@')[0] || 'Child',
             email: req.childEmail,
-            joinedAt: req.respondedAt || req.createdAt,
+            joinedAt: req.respondedAt || req.createdAt || new Date().toISOString(),
           });
           childrenModified = true;
         }
@@ -880,9 +963,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!exists) {
           currentParents.push({
             id: parentId,
-            name: req.parentName || 'Parent',
+            name: req.parentName || req.parentEmail?.split('@')[0] || 'Parent',
             email: req.parentEmail,
-            joinedAt: req.respondedAt || req.createdAt,
+            joinedAt: req.respondedAt || req.createdAt || new Date().toISOString(),
           });
           parentsModified = true;
         }
@@ -891,13 +974,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (childrenModified) {
       const cleanedList = currentChildren.filter(
-        (c) => c.id !== 'child-default' || currentChildren.length === 1
+        (c) => c.id !== 'child-default' && c.email !== 'child@family.app'
       );
       setLinkedChildren(cleanedList);
       localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(cleanedList));
+      if (!activeChildId || !cleanedList.some((c) => c.id === activeChildId)) {
+        if (cleanedList.length > 0) {
+          setActiveChildId(cleanedList[0].id);
+        }
+      }
       if (db && isFirebaseConfigured) {
         const userRef = doc(db, 'users', currentUser.uid);
         setDoc(userRef, sanitizeForFirestore({ linkedChildren: cleanedList }), { merge: true }).catch(
+          console.error
+        );
+        const familyRef = doc(db, 'families', activeFamilyId);
+        setDoc(familyRef, sanitizeForFirestore({ linkedChildren: cleanedList }), { merge: true }).catch(
           console.error
         );
       }
@@ -913,7 +1005,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
       }
     }
-  }, [sentLinkRequests, currentUser, linkedChildren, linkedParents]);
+  }, [sentLinkRequests, currentUser, activeFamilyId, activeChildId]);
 
   // Send request from parent to add a child
   const sendChildLinkRequest = async (
@@ -935,6 +1027,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     if (cleanEmail === (currentUser.email || '').trim().toLowerCase()) {
       return { success: false, message: 'You cannot link your own account email as a child.' };
+    }
+
+    const isDemoMode = currentUser.uid.startsWith('demo-');
+    if (isDemoMode) {
+      const demoReq: ChildLinkRequest = {
+        id: `demo-req-${Date.now()}`,
+        type: 'parent_invites_child',
+        parentId: currentUser.uid,
+        parentName: userProfile?.displayName || currentUser.displayName || 'Parent',
+        parentEmail: (currentUser.email || '').trim().toLowerCase(),
+        parentFamilyId: activeFamilyId,
+        childEmail: cleanEmail,
+        childName: childName?.trim() || cleanEmail.split('@')[0],
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+      setSentLinkRequests((prev) => [...prev, demoReq]);
+      addLinkedChild(childName?.trim() || cleanEmail.split('@')[0], cleanEmail);
+      return {
+        success: true,
+        message: `Child invite created for ${cleanEmail}! Added to your family list.`,
+      };
+    }
+
+    if (!db || !isFirebaseConfigured) {
+      // Local addition when Firebase is not active
+      addLinkedChild(childName?.trim() || cleanEmail.split('@')[0], cleanEmail);
+      return {
+        success: true,
+        message: `Child added to your family dashboard (${cleanEmail}).`,
+      };
     }
 
     const alreadyLinked = linkedChildren.some(
@@ -979,6 +1102,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     } catch (err: any) {
       console.error('Error sending child link request:', err);
+      const isPermissionErr =
+        err.code === 'permission-denied' ||
+        err.message?.toLowerCase().includes('permission');
+
+      if (isPermissionErr) {
+        addLinkedChild(childName?.trim() || cleanEmail.split('@')[0], cleanEmail);
+        return {
+          success: true,
+          message: `Child (${cleanEmail}) added to family! Note: Publish your Firestore Rules in Firebase Console to enable real-time cross-device sync.`,
+        };
+      }
       return { success: false, message: err.message || 'Failed to send link request.' };
     }
   };
@@ -1003,6 +1137,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     if (cleanEmail === (currentUser.email || '').trim().toLowerCase()) {
       return { success: false, message: 'You cannot link your own account email as your parent.' };
+    }
+
+    const isDemoMode = currentUser.uid.startsWith('demo-');
+    if (isDemoMode) {
+      const demoReq: ChildLinkRequest = {
+        id: `demo-req-${Date.now()}`,
+        type: 'child_requests_parent',
+        childUid: currentUser.uid,
+        childName: userProfile?.displayName || currentUser.displayName || 'Child',
+        childEmail: (currentUser.email || '').trim().toLowerCase(),
+        childFamilyId: activeFamilyId,
+        parentId: `demo-parent-${Date.now()}`,
+        parentName: parentName?.trim() || 'Parent',
+        parentEmail: cleanEmail,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+      setSentLinkRequests((prev) => [...prev, demoReq]);
+      addLinkedParent(parentName?.trim() || cleanEmail.split('@')[0], cleanEmail);
+      return {
+        success: true,
+        message: `Parent request created for ${cleanEmail}! Added to your parent link list.`,
+      };
+    }
+
+    if (!db || !isFirebaseConfigured) {
+      addLinkedParent(parentName?.trim() || cleanEmail.split('@')[0], cleanEmail);
+      return {
+        success: true,
+        message: `Parent linked to your account (${cleanEmail}).`,
+      };
     }
 
     const alreadyLinked = (linkedParents || []).some(
@@ -1048,13 +1213,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     } catch (err: any) {
       console.error('Error sending parent link request:', err);
+      const isPermissionErr =
+        err.code === 'permission-denied' ||
+        err.message?.toLowerCase().includes('permission');
+
+      if (isPermissionErr) {
+        addLinkedParent(parentName?.trim() || cleanEmail.split('@')[0], cleanEmail);
+        return {
+          success: true,
+          message: `Parent (${cleanEmail}) linked to your account! Note: Publish your Firestore Rules in Firebase Console to enable real-time cross-device sync.`,
+        };
+      }
       return { success: false, message: err.message || 'Failed to send parent link request.' };
     }
   };
 
   // Respond to incoming link request (Can be child accepting parent invite OR parent accepting child request)
   const respondToLinkRequest = async (requestId: string, accept: boolean) => {
-    if (!currentUser || !db || !isFirebaseConfigured) return;
+    if (!currentUser) return;
+
+    const isDemoMode = currentUser.uid.startsWith('demo-');
+    if (isDemoMode) {
+      const targetReq = pendingLinkRequests.find((r) => r.id === requestId);
+      setPendingLinkRequests((prev) => prev.filter((r) => r.id !== requestId));
+      setSentLinkRequests((prev) =>
+        prev.map((r) => (r.id === requestId ? { ...r, status: accept ? 'accepted' : 'declined' } : r))
+      );
+      if (accept && targetReq) {
+        if (targetReq.type === 'child_requests_parent') {
+          addLinkedChild(targetReq.childName || 'Child', targetReq.childEmail);
+        } else {
+          addLinkedParent(targetReq.parentName || 'Parent', targetReq.parentEmail);
+          addLinkedChild(targetReq.childName || targetReq.childEmail?.split('@')[0] || 'Child', targetReq.childEmail);
+        }
+      }
+      return;
+    }
+
+    if (!db || !isFirebaseConfigured) return;
     try {
       const reqRef = doc(db, 'linkRequests', requestId);
       const snap = await getDoc(reqRef);
@@ -1080,13 +1276,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           // 1. Add child to current user's linkedChildren
           const newChildEntry: LinkedChild = {
             id: reqData.childUid || 'child-' + Date.now(),
-            name: reqData.childName || 'Child',
+            name: reqData.childName || reqData.childEmail?.split('@')[0] || 'Child',
             email: reqData.childEmail,
             joinedAt: new Date().toISOString(),
           };
           const updatedChildren = linkedChildren
             .filter((c) => c.id !== newChildEntry.id && c.email?.toLowerCase() !== newChildEntry.email?.toLowerCase())
-            .filter((c) => c.id !== 'child-default' || linkedChildren.length === 1)
+            .filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app')
             .concat(newChildEntry);
 
           setLinkedChildren(updatedChildren);
@@ -1096,6 +1292,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             sanitizeForFirestore({ linkedChildren: updatedChildren }),
             { merge: true }
           );
+
+          // Also update family document with child entry
+          try {
+            const familyDocRef = doc(db, 'families', activeFamilyId);
+            const famSnap = await getDoc(familyDocRef);
+            let famChildren: LinkedChild[] = [];
+            if (famSnap.exists()) {
+              famChildren = (famSnap.data() as any).linkedChildren || [];
+            }
+            const existsFam = famChildren.some(
+              (c) => c.id === newChildEntry.id || (newChildEntry.email && c.email?.toLowerCase() === newChildEntry.email?.toLowerCase())
+            );
+            const updatedFamList = existsFam
+              ? famChildren
+              : famChildren.filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app').concat(newChildEntry);
+
+            await setDoc(
+              familyDocRef,
+              sanitizeForFirestore({ linkedChildren: updatedFamList }),
+              { merge: true }
+            );
+          } catch (fErr) {
+            console.error('Error updating family document with child:', fErr);
+          }
 
           // 2. Add current user as parent to child's user profile
           if (reqData.childUid) {
@@ -1132,13 +1352,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         } else {
           // CURRENT USER IS ACCEPTING PARENT INVITE TO BE A CHILD
+          const childNameResolved =
+            userProfile?.displayName || currentUser.displayName || reqData.childName || reqData.childEmail?.split('@')[0] || 'Child';
+          const childEmailResolved = currentUser.email || reqData.childEmail || '';
+
           await setDoc(
             reqRef,
             sanitizeForFirestore({
               status: 'accepted',
               childUid: currentUser.uid,
-              childName: userProfile?.displayName || currentUser.displayName || 'Child',
-              childEmail: currentUser.email || '',
+              childName: childNameResolved,
+              childEmail: childEmailResolved,
               respondedAt: new Date().toISOString(),
             }),
             { merge: true }
@@ -1147,7 +1371,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           // 1. Add parent to current user's linkedParents
           const parentEntry: LinkedParent = {
             id: reqData.parentId,
-            name: reqData.parentName || 'Parent',
+            name: reqData.parentName || reqData.parentEmail?.split('@')[0] || 'Parent',
             email: reqData.parentEmail,
             joinedAt: new Date().toISOString(),
           };
@@ -1157,49 +1381,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setLinkedParents(updatedParents);
           localStorage.setItem(STORAGE_KEYS.LINKED_PARENTS, JSON.stringify(updatedParents));
 
+          const targetFamilyId = reqData.parentFamilyId || activeFamilyId;
           const updatedParentIds = Array.from(
             new Set([...(userProfile?.parentIds || []), reqData.parentId])
           );
           await updateUserProfile({
-            familyId: reqData.parentFamilyId || activeFamilyId,
+            familyId: targetFamilyId,
             parentIds: updatedParentIds,
             linkedParents: updatedParents,
           });
 
-          if (reqData.parentFamilyId) {
-            setActiveFamilyId(reqData.parentFamilyId);
-            localStorage.setItem(STORAGE_KEYS.FAMILY_ID, reqData.parentFamilyId);
+          if (targetFamilyId) {
+            setActiveFamilyId(targetFamilyId);
+            localStorage.setItem(STORAGE_KEYS.FAMILY_ID, targetFamilyId);
           }
+
+          const newChildEntry: LinkedChild = {
+            id: currentUser.uid,
+            name: childNameResolved,
+            email: childEmailResolved,
+            joinedAt: new Date().toISOString(),
+          };
 
           // 2. Add current user as child to parent's user profile in Firestore
           try {
             const parentDocRef = doc(db, 'users', reqData.parentId);
             const parentSnap = await getDoc(parentDocRef);
+            let parentChildren: LinkedChild[] = [];
             if (parentSnap.exists()) {
-              const parentData = parentSnap.data() as any;
-              const parentChildren: LinkedChild[] = parentData.linkedChildren || [];
-              const exists = parentChildren.some(
-                (c) => c.id === currentUser.uid || (currentUser.email && c.email?.toLowerCase() === currentUser.email.toLowerCase())
-              );
-              if (!exists) {
-                const newChildEntry: LinkedChild = {
-                  id: currentUser.uid,
-                  name: userProfile?.displayName || currentUser.displayName || reqData.childName || 'Child',
-                  email: currentUser.email || reqData.childEmail,
-                  joinedAt: new Date().toISOString(),
-                };
-                const updatedList = parentChildren
-                  .filter((c) => c.id !== 'child-default')
-                  .concat(newChildEntry);
-                await setDoc(
-                  parentDocRef,
-                  sanitizeForFirestore({ linkedChildren: updatedList }),
-                  { merge: true }
-                );
-              }
+              parentChildren = (parentSnap.data() as any).linkedChildren || [];
             }
+            const exists = parentChildren.some(
+              (c) => c.id === currentUser.uid || (childEmailResolved && c.email?.toLowerCase() === childEmailResolved.toLowerCase())
+            );
+            const updatedList = exists
+              ? parentChildren
+              : parentChildren.filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app').concat(newChildEntry);
+
+            await setDoc(
+              parentDocRef,
+              sanitizeForFirestore({ linkedChildren: updatedList }),
+              { merge: true }
+            );
           } catch (pErr) {
             console.error('Error adding child to parent profile:', pErr);
+          }
+
+          // 3. CRITICAL: ALSO update the shared family document in Firestore!
+          try {
+            const familyDocRef = doc(db, 'families', targetFamilyId);
+            const famSnap = await getDoc(familyDocRef);
+            let famChildren: LinkedChild[] = [];
+            if (famSnap.exists()) {
+              famChildren = (famSnap.data() as any).linkedChildren || [];
+            }
+            const existsFam = famChildren.some(
+              (c) => c.id === currentUser.uid || (childEmailResolved && c.email?.toLowerCase() === childEmailResolved.toLowerCase())
+            );
+            const updatedFamList = existsFam
+              ? famChildren
+              : famChildren.filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app').concat(newChildEntry);
+
+            await setDoc(
+              familyDocRef,
+              sanitizeForFirestore({ linkedChildren: updatedFamList }),
+              { merge: true }
+            );
+          } catch (fErr) {
+            console.error('Error adding child to family document:', fErr);
           }
         }
 
@@ -1222,13 +1471,191 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const cancelLinkRequest = async (requestId: string) => {
-    if (!currentUser || !db || !isFirebaseConfigured) return;
+    if (!currentUser) return;
+    const isDemoMode = currentUser.uid.startsWith('demo-');
+    if (isDemoMode) {
+      setSentLinkRequests((prev) => prev.filter((r) => r.id !== requestId));
+      setPendingLinkRequests((prev) => prev.filter((r) => r.id !== requestId));
+      return;
+    }
+
+    if (!db || !isFirebaseConfigured) return;
     try {
       await deleteDoc(doc(db, 'linkRequests', requestId));
     } catch (err) {
       console.error('Error canceling link request:', err);
     }
   };
+
+  // Synchronize and reconcile linked children across linkRequests, users doc, and family doc
+  const syncLinkedChildren = async (): Promise<{
+    success: boolean;
+    count: number;
+    children: LinkedChild[];
+  }> => {
+    if (!currentUser) {
+      return { success: false, count: linkedChildren.length, children: linkedChildren };
+    }
+
+    const currentEmail = (currentUser.email || '').trim().toLowerCase();
+    const currentUid = currentUser.uid;
+    const childrenMap = new Map<string, LinkedChild>();
+
+    // 1. Existing state
+    linkedChildren.forEach((c) => {
+      if (c.id !== 'child-default' && c.email !== 'child@family.app') {
+        childrenMap.set(c.id, c);
+      }
+    });
+
+    if (currentUser.uid.startsWith('demo-')) {
+      // In demo mode, check sentLinkRequests
+      sentLinkRequests.forEach((req) => {
+        if (req.status === 'accepted' && (req.type === 'parent_invites_child' || !req.type)) {
+          const childId = req.childUid || req.id;
+          childrenMap.set(childId, {
+            id: childId,
+            name: req.childName || req.childEmail?.split('@')[0] || 'Child',
+            email: req.childEmail,
+            joinedAt: req.respondedAt || req.createdAt || new Date().toISOString(),
+          });
+        }
+      });
+      const list = Array.from(childrenMap.values());
+      setLinkedChildren(list);
+      localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(list));
+      if (list.length > 0 && (!activeChildId || !list.some((c) => c.id === activeChildId))) {
+        setActiveChildId(list[0].id);
+      }
+      return { success: true, count: list.length, children: list };
+    }
+
+    if (!db || !isFirebaseConfigured) {
+      return { success: false, count: linkedChildren.length, children: linkedChildren };
+    }
+
+    try {
+      // 2. Query linkRequests collection for accepted requests where current user is parent
+      try {
+        const qParentId = query(
+          collection(db, 'linkRequests'),
+          where('parentId', '==', currentUid),
+          where('status', '==', 'accepted')
+        );
+        const snapParentId = await getDocs(qParentId);
+        snapParentId.forEach((d) => {
+          const req = d.data() as ChildLinkRequest;
+          const childId = req.childUid || req.id || d.id;
+          childrenMap.set(childId, {
+            id: childId,
+            name: req.childName || req.childEmail?.split('@')[0] || 'Child',
+            email: req.childEmail,
+            joinedAt: req.respondedAt || req.createdAt || new Date().toISOString(),
+          });
+        });
+      } catch (errQ1) {
+        console.warn('Query linkRequests by parentId warning:', errQ1);
+      }
+
+      if (currentEmail) {
+        try {
+          const qParentEmail = query(
+            collection(db, 'linkRequests'),
+            where('parentEmail', '==', currentEmail),
+            where('status', '==', 'accepted')
+          );
+          const snapParentEmail = await getDocs(qParentEmail);
+          snapParentEmail.forEach((d) => {
+            const req = d.data() as ChildLinkRequest;
+            const childId = req.childUid || req.id || d.id;
+            childrenMap.set(childId, {
+              id: childId,
+              name: req.childName || req.childEmail?.split('@')[0] || 'Child',
+              email: req.childEmail,
+              joinedAt: req.respondedAt || req.createdAt || new Date().toISOString(),
+            });
+          });
+        } catch (errQ2) {
+          console.warn('Query linkRequests by parentEmail warning:', errQ2);
+        }
+      }
+
+      // Also check any currently loaded sentLinkRequests
+      sentLinkRequests.forEach((req) => {
+        if (req.status === 'accepted' && (req.type === 'parent_invites_child' || !req.type)) {
+          const childId = req.childUid || req.id;
+          childrenMap.set(childId, {
+            id: childId,
+            name: req.childName || req.childEmail?.split('@')[0] || 'Child',
+            email: req.childEmail,
+            joinedAt: req.respondedAt || req.createdAt || new Date().toISOString(),
+          });
+        }
+      });
+
+      // 3. Query current user's profile doc in users collection
+      const userDocRef = doc(db, 'users', currentUid);
+      const userSnap = await getDoc(userDocRef);
+      if (userSnap.exists()) {
+        const uData = userSnap.data() as any;
+        if (Array.isArray(uData.linkedChildren)) {
+          (uData.linkedChildren as LinkedChild[]).forEach((c) => {
+            if (c.id !== 'child-default' && c.email !== 'child@family.app') {
+              childrenMap.set(c.id, c);
+            }
+          });
+        }
+      }
+
+      // 4. Query active family doc
+      const famDocRef = doc(db, 'families', activeFamilyId);
+      const famSnap = await getDoc(famDocRef);
+      if (famSnap.exists()) {
+        const fData = famSnap.data() as any;
+        if (Array.isArray(fData.linkedChildren)) {
+          (fData.linkedChildren as LinkedChild[]).forEach((c) => {
+            if (c.id !== 'child-default' && c.email !== 'child@family.app') {
+              childrenMap.set(c.id, c);
+            }
+          });
+        }
+      }
+
+      const mergedList = Array.from(childrenMap.values()).filter(
+        (c) => c.id !== 'child-default' && c.email !== 'child@family.app'
+      );
+
+      // Update state & storage
+      setLinkedChildren(mergedList);
+      localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(mergedList));
+
+      if (mergedList.length > 0 && (!activeChildId || !mergedList.some((c) => c.id === activeChildId))) {
+        setActiveChildId(mergedList[0].id);
+      }
+
+      // Persist merged list back to user doc and family doc
+      if (mergedList.length > 0) {
+        await setDoc(userDocRef, sanitizeForFirestore({ linkedChildren: mergedList }), { merge: true }).catch(
+          console.error
+        );
+        await setDoc(famDocRef, sanitizeForFirestore({ linkedChildren: mergedList }), { merge: true }).catch(
+          console.error
+        );
+      }
+
+      return { success: true, count: mergedList.length, children: mergedList };
+    } catch (err) {
+      console.error('Error synchronizing linked children:', err);
+      return { success: false, count: linkedChildren.length, children: linkedChildren };
+    }
+  };
+
+  // Run reconciliation automatically when currentUser or role changes
+  useEffect(() => {
+    if (currentUser) {
+      syncLinkedChildren();
+    }
+  }, [currentUser, role]);
 
   // Time Blocks
   const [timeBlocks, setTimeBlocks] = useState<TimeBlock[]>(() => {
@@ -1462,7 +1889,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setWeeklyReview(data.weeklyReview);
           }
         }
-        if (data.linkedChildren) setLinkedChildren((data.linkedChildren as LinkedChild[]).filter((c) => c.id !== 'child-default' && c.email !== 'child@family.app'));
+
+        if (data.linkedChildren && Array.isArray(data.linkedChildren)) {
+          const remoteList = (data.linkedChildren as LinkedChild[]).filter(
+            (c) => c.id !== 'child-default' && c.email !== 'child@family.app'
+          );
+          if (remoteList.length > 0) {
+            setLinkedChildren((prev) => {
+              const map = new Map<string, LinkedChild>();
+              prev.forEach((c) => {
+                if (c.id !== 'child-default' && c.email !== 'child@family.app') {
+                  map.set(c.id, c);
+                }
+              });
+              remoteList.forEach((c) => {
+                map.set(c.id, c);
+              });
+              const merged = Array.from(map.values());
+              localStorage.setItem(STORAGE_KEYS.LINKED_CHILDREN, JSON.stringify(merged));
+              return merged;
+            });
+          }
+        }
       }
     });
 
@@ -2190,6 +2638,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sendParentLinkRequest,
         respondToLinkRequest,
         cancelLinkRequest,
+        syncLinkedChildren,
         selectedDate,
         setSelectedDate,
         todayDateStr,

@@ -13,6 +13,7 @@ import {
   Mail,
   Moon,
   Plus,
+  RefreshCw,
   Shield,
   Sparkles,
   Sun,
@@ -46,6 +47,7 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ onBack }) => {
     sendParentLinkRequest,
     respondToLinkRequest,
     cancelLinkRequest,
+    syncLinkedChildren,
     currentDaySession,
     startDay,
     endDay,
@@ -79,6 +81,27 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ onBack }) => {
 
   // Sign out confirmation
   const [isConfirmingSignOut, setIsConfirmingSignOut] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+
+  const handleSyncChildren = async () => {
+    setIsSyncing(true);
+    setSyncMsg(null);
+    try {
+      const res = await syncLinkedChildren();
+      if (res.success && res.count > 0) {
+        setSyncMsg(`Sync complete! ${res.count} child profile(s) connected.`);
+      } else {
+        setSyncMsg('All child links are up to date.');
+      }
+      setTimeout(() => setSyncMsg(null), 3500);
+    } catch {
+      setSyncMsg('Sync checked.');
+      setTimeout(() => setSyncMsg(null), 3000);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleSaveName = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -456,7 +479,7 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ onBack }) => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
                 onClick={() => {
@@ -467,6 +490,17 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ onBack }) => {
               >
                 <HeartHandshake className="w-3.5 h-3.5 text-emerald-300" />
                 <span>Link Child</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSyncChildren}
+                disabled={isSyncing}
+                className="px-3 py-1 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-200 border border-emerald-500/40 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs"
+                title="Re-check cloud and link requests for newly accepted children"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-300 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Syncing...' : 'Sync Children'}</span>
               </button>
 
               {!isQuickAddOpen ? (
@@ -505,6 +539,12 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ onBack }) => {
                 </form>
               )}
             </div>
+            {syncMsg && (
+              <div className="p-2 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+                <span>{syncMsg}</span>
+              </div>
+            )}
           </div>
 
           {/* Children Detailed List */}
@@ -677,6 +717,32 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ onBack }) => {
                         className="text-[11px] text-rose-600 hover:text-rose-800 underline"
                       >
                         Cancel
+                      </button>
+                    )}
+                    {req.status === 'accepted' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const targetId = req.childUid || req.id;
+                          const isAlreadyLinked = linkedChildren.some(
+                            (c) => c.id === targetId || (req.childEmail && c.email?.toLowerCase() === req.childEmail.toLowerCase())
+                          );
+                          if (!isAlreadyLinked) {
+                            addLinkedChild(req.childName || req.childEmail?.split('@')[0] || 'Child', req.childEmail);
+                          } else {
+                            const match = linkedChildren.find(
+                              (c) => c.id === targetId || (req.childEmail && c.email?.toLowerCase() === req.childEmail.toLowerCase())
+                            );
+                            if (match) setActiveChildId(match.id);
+                          }
+                        }}
+                        className={`text-[11px] font-bold px-2 py-0.5 rounded-lg transition-colors ${
+                          activeChildId === (req.childUid || req.id)
+                            ? 'bg-emerald-800 text-white'
+                            : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                        }`}
+                      >
+                        {activeChildId === (req.childUid || req.id) ? '✓ Active' : 'Activate'}
                       </button>
                     )}
                   </div>
